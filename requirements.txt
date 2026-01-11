@@ -1,6 +1,8 @@
 # Requirements for Ridi DRM Remover
 cryptography
 PyPDF2
+PySide6
+PySide6-Fluent-Widgets
 
 # For compiling with Nuitka
 nuitka
