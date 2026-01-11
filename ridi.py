@@ -213,11 +213,83 @@ class AuthCommand:
         else:
             print("Failed to remove user.")
 
+
+class BooksCommand:
+    def __init__(self, config_mgr: ConfigManager):
+        self.config_mgr = config_mgr
+
+    def run(self, name_filter: Optional[str] = None, id_filter: Optional[str] = None):
+        active = self.config_mgr.get_active_user()
+        if not active:
+            print("No active user. Please login first.")
+            return
+        
+        user_idx = active["user_idx"]
+        device_id = active["device_id"]
+        
+        try:
+            lib_path = ridi_utils.library_path(user_idx)
+            if not lib_path.exists():
+                print(f"Library path not found for user {user_idx}: {lib_path}")
+                return
+
+            infos = ridi_utils.book_infos(lib_path)
+            # Filter out books without .dat files
+            infos = [b for b in infos if b.file_path(ridi_utils.FileKind.DATA).exists()]
+            
+            if not infos:
+                print("No books found in library.")
+                return
+            
+            # Filter by ID first if provided
+            if id_filter:
+                infos = [b for b in infos if b.id == id_filter]
+                if not infos:
+                    print(f"No books found with ID: {id_filter}")
+                    return
+
+            results: List[tuple[str, str]] = []
+            
+            print(f"Scanning {len(infos)} books for metadata...", file=sys.stderr)
+            
+            for i, book in enumerate(infos):
+                try:
+                    # Print progress
+                    print(f"\rProcessing {i+1}/{len(infos)}: {book.id}", end="", file=sys.stderr)
+                    
+                    key = ridi_utils.decrypt_key(book, device_id)
+                    book_content = ridi_utils.decrypt_book(book, key)
+                    title = ridi_utils.extract_title(book.format, book_content) or "Unknown Title"
+                    
+                    if name_filter and name_filter not in title:
+                        continue
+                        
+                    results.append((book.id, title))
+                except Exception as e:
+                    # If we can't decrypt or read, maybe just list ID
+                    if not name_filter:
+                        results.append((book.id, f"[Error: {e}]"))
+            
+            print("\r" + " " * 50 + "\r", end="", file=sys.stderr) # Clear progress line
+            
+            if not results:
+                print("No books matched criteria.")
+                return
+
+            print(f"{'ID':<12} | {'Title'}")
+            print("-" * 60)
+            for bid, btitle in results:
+                print(f"{bid:<12} | {btitle}")
+                
+        except Exception as e:
+            print(f"Error: {e}")
+
+
 class ExportCommand:
     def __init__(self, config_mgr: ConfigManager):
         self.config_mgr = config_mgr
 
-    def run(self, output_dir: str):
+    def run(self, output_dir: str, name_filter: Optional[str] = None, id_filter: Optional[str] = None, run_all: bool = False):
         active = self.config_mgr.get_active_user()
         if not active:
             print("No active user. Please login first.")
@@ -282,9 +354,17 @@ def main():
     auth_subparsers.add_parser("switch", help="Switch between accounts")
     auth_subparsers.add_parser("list", help="List accounts")
     
+    # Books command
+    books_parser = subparsers.add_parser("books", help="List downloaded books")
+    books_parser.add_argument("-n", "--name", help="Filter by book title (partial match)")
+    books_parser.add_argument("-i", "--id", help="Filter by book ID (exact match)")
+
     # Export command
     export_parser = subparsers.add_parser("export", help="Export and decrypt books")
     export_parser.add_argument("-o", "--output", default=".", help="Output directory (default: current)")
+    export_parser.add_argument("-n", "--name", help="Export books matching title (partial match)")
+    export_parser.add_argument("-i", "--id", help="Export book matching ID (exact match)")
+    export_parser.add_argument("-a", "--all", action="store_true", help="Export all books")
     
     args = parser.parse_args()
     
@@ -303,10 +383,18 @@ def main():
                 cmd.list_accounts()
             else:
                 auth_parser.print_help()
+        
+        elif args.command == "books":
+            cmd = BooksCommand(config_mgr)
+            cmd.run(name_filter=args.name, id_filter=args.id)
                 
         elif args.command == "export":
-            cmd = ExportCommand(config_mgr)
-            cmd.run(args.output)
+            # Show help if no filtering or "all" argument is provided
+            if not any([args.all, args.name, args.id]):
+                export_parser.print_help()
+            else:
+                cmd = ExportCommand(config_mgr)
+                cmd.run(args.output, name_filter=args.name, id_filter=args.id, run_all=args.all)
             
         else:
             parser.print_help()
